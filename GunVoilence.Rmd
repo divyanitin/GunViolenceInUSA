@@ -1,0 +1,425 @@
+---
+title: "Gun Violence in US"
+author: "Divya Nitin Naidu"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  word_document: default
+---
+
+
+# Loading and Exploring Data
+
+##Loading libraries required and reading the data into R
+
+```{r, message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tibble)
+library(stringr)
+library(gridExtra)
+library(scales)
+library(lubridate)
+library(ggrepel)
+library(leaflet)
+library(rgdal)
+```
+
+
+```{r, results='hide', warning=FALSE}
+gun <- read.csv("~/SEM2/DAV/Project/gun-violence-data_01-2013_03-2018.csv")
+```
+
+##Data size and structure
+
+```{r}
+glimpse(gun)
+```
+
+
+```{r}
+summary(gun)
+```
+
+
+
+#Data exploration
+
+##Comparing number of incidents by year, month, and weekday
+
+```{r}
+gun$date <- ymd(gun$date)
+str(gun$date)
+summary(gun$date)
+```
+
+###By year
+
+```{r}
+gun$year <- year(gun$date) #extract year from date using the lubridate year() function
+```
+
+###By month
+
+```{r, warning=FALSE, message=FALSE}
+gun$month <- month(gun$date, label=TRUE)
+```
+
+
+####Dates with most incidents
+
+```{r, message=FALSE}
+gun$day <- day(gun$date)
+gun <- gun %>% mutate(date2=paste(month, day))
+kable(gun %>% filter(year!=c(2013, 2018)) %>% count(date2) %>% top_n(10) %>% arrange(desc(n)) %>% rename(date=date2, "total number of incidents"=n))
+```
+
+----
+###By weekday
+
+
+```{r}
+gun$weekday <- wday(gun$date, label=TRUE)
+```
+
+##Comparing number of incidents and victims by location
+
+###Incidents by State
+
+```{r}
+gun[, c('state', 'city_or_county')] <- lapply(gun[, c('state', 'city_or_county')], as.factor)
+
+str(gun$state)
+str(gun$city_or_county)
+```
+
+####Incidents relative to the State population size
+
+```{r, message=FALSE}
+#source file location: https://www2.census.gov/programs-surveys/popest/datasets/2010-2017/state/asrh/scprc-est2017-18+pop-res.csv
+
+statesPop <- read.csv("~/SEM2/DAV/Project/PopulationUS.csv")
+statesPop <- statesPop %>% select(NAME, POPESTIMATE2017)
+statesPop <- statesPop %>% filter(!NAME %in% c("United States", "Puerto Rico Commonwealth"))
+statesPop <- statesPop %>% rename(state= NAME)
+statesPop$state <- as.factor(statesPop$state)
+```
+
+
+
+```{r}
+incidentsByState <- gun %>% group_by(state) %>% summarize(stateIncidents=n())
+incidentsByState <-left_join(incidentsByState, statesPop, by="state")
+incidentsByState$Per100000 <- round((incidentsByState$stateIncidents/incidentsByState$POPESTIMATE2017)*100000)
+kable(head(incidentsByState))
+```
+
+```{r}
+kable(incidentsByState %>%
+        filter(state %in% c('District of Columbia', 'Alaska', 'California', 'Hawaii')))
+```
+
+####An interactive map of incidents by state with Leaflet
+
+```{r}
+#source file location: "http://www2.census.gov/geo/tiger/GENZ2017/shp/cb_2017_us_state_500k.zip"
+
+states <- readOGR(dsn = "~/SEM2/DAV/Project/cb_2017_us_state_500k", layer = "cb_2017_us_state_500k", encoding = "UTF-8")
+```
+
+```{r}
+class(states)
+```
+
+
+```{r}
+kable(head(states@data)) #please notice the different notation using `@` instead of the usual '$'
+```
+
+
+###Victims by State
+
+```{r}
+gun$victims <- gun$n_killed + gun$n_injured
+```
+
+####Severity of Incidents
+
+```{r}
+VictimsByState <- gun %>% group_by(state) %>% summarize(sumVic=sum(victims), sumInj=sum(n_injured), sumDeath=sum(n_killed), PercDeath=round(sumDeath/sumVic,2), sumIncidents=n(), vicPerInc=round(sumVic/sumIncidents,2))
+head(VictimsByState)
+```
+
+####Victims relative to the state population sizes
+
+```{r, message=FALSE, out.width="100%", fig.height=6}
+VictimsByState <-left_join(VictimsByState, statesPop, by="state")
+VictimsByState$Per100000 <- round((VictimsByState$sumVic/VictimsByState$POPESTIMATE2017)*100000)
+```
+
+###Incidents by city
+
+```{r}
+incidentsByCity <- gun %>% select(city_or_county, state) %>% rename(city=city_or_county) %>% group_by(city, state) %>% summarize(cityIncidents=n())
+```
+
+
+```{r}
+incidentsByCity[(incidentsByCity$city %in% c('Brooklyn', 'Bronx', 'Queens', 'Staten Island','New York (Manhattan)')) & incidentsByCity$state=='New York',]
+```
+
+
+```{r}
+sumNewYork <- sum(incidentsByCity$cityIncidents[(incidentsByCity$city %in% c('Brooklyn', 'Bronx', 'Queens', 'Staten Island','New York (Manhattan)')) & incidentsByCity$state=='New York'])
+
+NewYork <- data.frame(city='New York', state='New York', cityIncidents=sumNewYork)
+incidentsByCity <- as.tibble(rbind(as.data.frame(incidentsByCity), NewYork))
+```
+
+```{r}
+incidentsByCity %>% top_n(20, wt=cityIncidents) %>%
+        ggplot(aes(x=reorder(city, cityIncidents), y=cityIncidents)) + geom_bar(stat='identity', fill='orange') +
+        labs(x='City', y='Number of incidents') + coord_flip()
+```
+
+####Incidents relative to the City population size
+
+```{r, message="FALSE"}
+#source file location: https://simplemaps.com/data/us-cities
+
+citiesPop <- read.csv("~/SEM2/DAV/Project/uscitiesv1.5.csv")
+citiesPop <- citiesPop %>% select(city, state_name, population_proper) %>% rename(state=state_name, population=population_proper) %>% filter(population>600000)
+```
+
+
+```{r, warning=FALSE}
+citiesPop <-left_join(citiesPop, incidentsByCity, by=c("city", "state"))
+citiesPop$Per100000 <- round((citiesPop$cityIncidents/citiesPop$population)*100000)
+citiesPop$citystate <- str_c(citiesPop$city, " - " ,citiesPop$state)
+
+incidentsByState <- incidentsByState %>% rename(state_avg=Per100000)
+citiesPop <- left_join(citiesPop, incidentsByState %>% select(state, state_avg), by="state")
+
+citiesPop1 <- citiesPop %>% select(citystate, Per100000, state, state_avg) %>% rename(city_avg=Per100000)
+gathercols <- c("city_avg", "state_avg")
+CitiesStatesLong <- tidyr::gather(citiesPop1, city_or_state, per100k, gathercols)
+citiesTop20 <- CitiesStatesLong %>% filter(city_or_state=='city_avg') %>% arrange(per100k) %>% top_n(20, wt=per100k)
+Top20names <- citiesTop20$citystate
+CitiesStatesLong <- CitiesStatesLong[CitiesStatesLong$citystate %in% Top20names,]
+```
+
+
+```{r, out.width="100%"}
+ggplot(CitiesStatesLong, aes(x=factor(citystate), y=per100k, fill=city_or_state)) +
+        geom_bar(stat="identity", position = position_dodge2(reverse=TRUE, padding=0.1)) + coord_flip() +
+        scale_fill_manual(values = c("state_avg"="orange", "city_avg"="red")) +
+        scale_x_discrete(limits=Top20names) + labs(y='Incidents per 100,000 inhabitants', x="")
+```
+
+
+##Incidents with highest numbers of victims
+
+
+```{r}
+Top10 <- gun %>% select(incident_id, date, n_killed, n_injured, victims, location_description, city_or_county, state, latitude, longitude) %>% rename(Incident_Id=incident_id, Date=date, Killed=n_killed, Injured=n_injured, Victims=victims, Location=location_description, City=city_or_county) %>%
+         arrange(desc(Victims)) %>% top_n(n=13, wt=Victims)
+```
+
+```{r}
+kable(Top10 %>% select(-longitude, -latitude))
+```
+
+##Analyzing the Incident Characteristics
+
+```{r}
+head(gun$incident_characteristics,2)
+```
+
+```{r}
+#install.packages("splitstackshape")
+library(splitstackshape)
+#replacing "||" with "|" as both separators are used
+gun$incident_characteristics <- gsub("\\|\\|", "|", gun$incident_characteristics)
+
+IncCharac <- splitstackshape::cSplit(gun %>% select(incident_id, state, city_or_county, incident_characteristics), 'incident_characteristics', sep =  '|', direction="long")
+
+numCat <- round(nrow(IncCharac)/nrow(gun),1)
+cat('On average, there are', numCat, 'incident categories specified per incident')
+```
+
+
+```{r}
+kable(head(IncCharac,8))
+```
+
+###Incident categories in the US
+
+```{r, out.width="100%"}
+IncCharac %>% count(incident_characteristics) %>% top_n(30, wt=n) %>%
+        ggplot(aes(x=reorder(incident_characteristics, n), y=n)) +
+        geom_bar(stat='identity', fill='orange') +
+        coord_flip() + labs(x='Incident Category', y='number of incidents')
+```
+
+
+```{r}
+overallCats <- c("Shot - Wounded/Injured", "Shot - Dead (murder, accidental, suicide)", "Non-Shooting Incident", "Shots Fired - No Injuries")
+```
+
+```{r}
+TableOverallCats <- IncCharac %>% filter(incident_characteristics %in% overallCats) %>% count(incident_characteristics)
+cat('For', round((sum(TableOverallCats$n)/nrow(gun))*100), 'percent of incidents, an overall category is specified')
+```
+
+
+
+####Comparing the main incident categories by state
+
+```{r, out.width="100%"}
+coloursShot <- c("Shot - Wounded/Injured"="orange", "Shot - Dead (murder, accidental, suicide)"="red", "Non-Shooting Incident"="green", "Shots Fired - No Injuries"="yellow")
+
+#creating a function to vary the x-axis scale (next plot uses same graph with diferent scale)
+usCats <- function(fixedX=0.5){
+   IncCharac %>% filter(incident_characteristics %in% overallCats) %>%
+   count(incident_characteristics) %>%
+   ggplot(aes(x=reorder(incident_characteristics, n), y=n/sum(n), fill=factor(incident_characteristics))) +
+   geom_bar(stat='identity', width = 0.5) + scale_fill_manual(values = coloursShot) +
+   theme(legend.position="none") + coord_flip(ylim = c(0, fixedX)) + labs(x="", y='US overall') +
+   scale_y_continuous(labels=percent)
+}
+
+#creating a function to create plots by state
+stateCats <- function(stateName){
+   IncCharac %>% filter(state==stateName & incident_characteristics %in% overallCats) %>%
+   count(incident_characteristics) %>%
+   ggplot(aes(x=reorder(incident_characteristics, n), y=n/sum(n), fill=factor(incident_characteristics))) +
+   geom_bar(stat='identity', width = 0.5)+ scale_fill_manual(values = coloursShot) +
+   theme(legend.position="none") + coord_flip(ylim = c(0, 0.5)) + labs(x="", y=stateName) +
+   scale_y_continuous(labels=percent)
+}
+
+usOverallCats <- usCats()
+texasCats <- stateCats('Texas')
+californiaCats <- stateCats('California')
+newjerseyCats <- stateCats('New Jersey')
+
+grid.arrange(usOverallCats, texasCats, californiaCats, newjerseyCats, ncol=1)
+```
+
+####Comparing the main incident categories by city
+
+```{r, out.width="100%"}
+#creating a function to create plots by city
+cityCats <- function(cityName){
+   IncCharac %>% filter(city_or_county==cityName & incident_characteristics %in% overallCats) %>%
+   count(incident_characteristics) %>%
+   ggplot(aes(x=reorder(incident_characteristics, n), y=n/sum(n), fill=factor(incident_characteristics))) +
+   geom_bar(stat='identity', width = 0.5) + scale_fill_manual(values = coloursShot) +
+   theme(legend.position="none") + coord_flip(ylim = c(0, 0.8)) + labs(x="", y=cityName) +
+   scale_y_continuous(labels=percent)
+}
+
+usOverallCats <- usCats(0.8)
+newyorkCats <- cityCats('New York')
+denverCats <- cityCats('Denver')
+chicagoCats <- cityCats('Chicago')
+
+grid.arrange(usOverallCats, newyorkCats, denverCats, chicagoCats, ncol=1)
+```
+
+###Opportunities offered by the smaller incident categories
+
+
+```{r}
+CatTable <- IncCharac %>% count(incident_characteristics)
+kable(CatTable[1:10,])
+```
+
+####Sub categories of the deadly incidents
+
+
+```{r}
+Dead <- c("Shot - Dead (murder, accidental, suicide)", "Accidental Shooting - Death", "Murder/Suicide", "Mass Murder (4+ deceased victims excluding the subject/suspect/perpetrator , one location)", "Suicide^", "Attempted Murder/Suicide (one variable unsuccessful)")
+CatTable %>% filter(incident_characteristics %in% Dead)
+```
+
+####Terrorism, gang involvement, and drug involvement
+
+```{r}
+Involvement <- c("Terrorism Involvement", "Drug involvement", "Gang involvement")
+kable(CatTable %>% filter(incident_characteristics %in% Involvement))
+```
+
+----
+
+**Drug involvement**
+
+
+```{r, out.width="100%", warning=FALSE}
+Drugs <- IncCharac %>% filter(incident_characteristics=="Drug involvement")
+Drugs <- left_join(Drugs, gun %>% select(incident_id, longitude, latitude, location_description, victims), by="incident_id")
+
+labels <- paste0("<strong>City: </strong>", Drugs$city_or_county, 
+                 "<br><strong>Location: </strong>", Drugs$location_description,
+                 "<br><strong>Victims </strong>", Drugs$victims) %>% lapply(htmltools::HTML)
+
+leaflet(Drugs) %>%
+        setView(lng=-76.6, lat=39.3, zoom=8) %>%
+        addTiles() %>%
+        addProviderTiles("CartoDB.Positron", group="Light map") %>%
+        addProviderTiles("Esri.NatGeoWorldMap", group= "Green map") %>%
+        addScaleBar %>%
+        addMarkers(~longitude, ~latitude,
+                label = labels,  
+                clusterOptions = markerClusterOptions()) %>%
+    addLayersControl(baseGroups = c("Green map", "Light map"), options = layersControlOptions(collapsed = FALSE))
+```
+
+
+
+```{r, out.width="100%", warning=FALSE}
+Gangs <- IncCharac %>% filter(incident_characteristics=="Gang involvement")
+Gangs <- left_join(Gangs, gun %>% select(incident_id, longitude, latitude, location_description, victims), by="incident_id")
+
+labels <- paste0("<strong>City: </strong>", Gangs$city_or_county, 
+                 "<br><strong>Location: </strong>", Gangs$location_description,
+                 "<br><strong>Victims </strong>", Gangs$victims) %>% lapply(htmltools::HTML)
+
+leaflet(Gangs) %>%
+        setView(lng=-87.6, lat=41.9, zoom=6) %>%
+        addTiles() %>%
+        addProviderTiles("CartoDB.Positron", group="Light map") %>%
+        addProviderTiles("Esri.NatGeoWorldMap", group= "Green map") %>%
+        addScaleBar %>%
+        addMarkers(~longitude, ~latitude,
+                label = labels,  
+                clusterOptions = markerClusterOptions()) %>%
+    addLayersControl(baseGroups = c("Green map", "Light map"), options = layersControlOptions(collapsed = FALSE))
+```
+
+**Terrorism**
+
+
+```{r, out.width="100%", warning=FALSE}
+Terror <- IncCharac %>% filter(incident_characteristics=="Terrorism Involvement")
+Terror <- left_join(Terror, gun %>% select(incident_id, longitude, latitude, location_description, victims), by="incident_id")
+
+labels <- paste0("<strong>City: </strong>", Terror$city_or_county, 
+                 "<br><strong>Location: </strong>", Terror$location_description,
+                 "<br><strong>Victims </strong>", Terror$victims) %>% lapply(htmltools::HTML)
+
+leaflet(Terror) %>%
+        setView(lng=-96, lat=37.8, zoom=4) %>%
+        addTiles() %>%
+        addProviderTiles("CartoDB.Positron") %>%
+        addCircleMarkers(~longitude, ~latitude, color = "red", radius=~sqrt(victims), label = labels)
+```
+
+
+```{r}
+write.csv(gun,file ="~/SEM2/DAV/Project/gun-violence-data.csv" )
+```
+
